@@ -350,6 +350,30 @@ pub struct AuthRefresh {
     pub session_token: String,
 }
 
+/// MCP data-availability request: distribute a lane checkpoint to validators so they can attest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct McpDaRequest {
+    pub epoch: u64,
+    pub slot: u64,
+    pub lane_id: u8,
+    pub checkpoint_ix: u16,
+    pub checkpoint_id: [u8; 32],
+    /// Encoded `McpCheckpointV1` bytes (Agave MCP wire format).
+    pub checkpoint_bytes: Vec<u8>,
+}
+
+/// MCP data-availability attestation for a lane checkpoint.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct McpDaAttest {
+    pub epoch: u64,
+    pub slot: u64,
+    pub lane_id: u8,
+    pub checkpoint_ix: u16,
+    pub checkpoint_id: [u8; 32],
+    pub validator_pubkey: PubkeyBytes,
+    pub sig: SignatureBytes,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum AgentToPop {
@@ -385,6 +409,14 @@ pub enum AgentToPop {
     SubscribeFairCommits,
     /// Stop receiving leader-signed fair ordering commits.
     UnsubscribeFairCommits,
+    /// MCP data-availability request (checkpoint distribution).
+    McpDaRequest(McpDaRequest),
+    /// MCP data-availability attestation for a checkpoint.
+    McpDaAttest(McpDaAttest),
+    /// Subscribe to MCP data-availability requests over SolanaCDN.
+    SubscribeMcpDa,
+    /// Stop receiving MCP data-availability requests over SolanaCDN.
+    UnsubscribeMcpDa,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -407,6 +439,10 @@ pub enum PopToAgent {
     FairBatch(FairBatch),
     /// Leader-signed commit/receipt for a previously received `FairBatch`.
     FairBatchCommit(FairBatchCommit),
+    /// MCP data-availability request (checkpoint distribution).
+    McpDaRequest(McpDaRequest),
+    /// MCP data-availability attestation for a checkpoint.
+    McpDaAttest(McpDaAttest),
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
