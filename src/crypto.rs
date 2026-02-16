@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::Path;
+
 use ed25519_dalek::Signer;
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use rand::RngCore;
@@ -5,12 +8,34 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("postcard error: {0}")]
     Postcard(#[from] postcard::Error),
+    #[error("invalid keypair length: {0} (expected 64)")]
+    InvalidKeypairLength(usize),
+    #[error("public key mismatch")]
+    PublicKeyMismatch,
+    #[error("delegation cert is missing")]
+    DelegationCertMissing,
+    #[error("delegate pubkey is missing")]
+    DelegatePubkeyMissing,
+    #[error("delegation cert does not match payload")]
+    DelegationCertMismatch,
+    #[error("delegation cert is not valid at the provided timestamp")]
+    DelegationNotValidAtTime,
     #[error("invalid verifying key bytes")]
     InvalidVerifyingKey,
     #[error("signature verification failed")]
     VerificationFailed,
+    #[error("missing signer pubkey")]
+    MissingSignerPubkey,
+    #[error("missing signature")]
+    MissingSignature,
+    #[error("missing nonce")]
+    MissingNonce,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -124,7 +149,10 @@ pub struct DelegationCert {
 }
 
 impl DelegationCert {
-    pub fn sign(validator_key: &SigningKey, payload: DelegationPayload) -> Result<Self, CryptoError> {
+    pub fn sign(
+        validator_key: &SigningKey,
+        payload: DelegationPayload,
+    ) -> Result<Self, CryptoError> {
         let bytes = postcard::to_stdvec(&payload)?;
         let signature = validator_key.sign(&bytes);
         Ok(Self {
@@ -148,4 +176,101 @@ pub fn random_nonce_16() -> [u8; 16] {
     let mut out = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut out);
     out
+}
+
+/// Loads a Solana JSON keypair file (64-byte array) into an Ed25519 signing key.
+pub fn load_solana_keypair_file(path: impl AsRef<Path>) -> Result<SigningKey, CryptoError> {
+    let s = fs::read_to_string(path)?;
+    let bytes: Vec<u8> = serde_json::from_str(&s)?;
+    if bytes.len() != 64 {
+        return Err(CryptoError::InvalidKeypairLength(bytes.len()));
+    }
+
+    let secret: [u8; 32] = bytes[0..32].try_into().expect("slice length checked");
+    let public: [u8; 32] = bytes[32..64].try_into().expect("slice length checked");
+
+    let signing_key = SigningKey::from_bytes(&secret);
+    let verifying_key = signing_key.verifying_key();
+    if verifying_key.to_bytes() != public {
+        return Err(CryptoError::PublicKeyMismatch);
+    }
+
+    Ok(signing_key)
+}
+
+/// Loads a delegation certificate from a file.
+///
+/// Accepts either JSON (serde) or binary postcard encoding.
+pub fn load_delegation_cert_file(path: impl AsRef<Path>) -> Result<DelegationCert, CryptoError> {
+    let bytes = fs::read(path)?;
+    if let Ok(cert) = serde_json::from_slice::<DelegationCert>(&bytes) {
+        return Ok(cert);
+    }
+    Ok(postcard::from_bytes::<DelegationCert>(&bytes)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::Signer;
+
+    #[test]
+    fn delegation_cert_roundtrip_verifies() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let payload = DelegationPayload {
+            validator_pubkey: PubkeyBytes::from(key.verifying_key()),
+            delegate_pubkey: PubkeyBytes([7u8; 32]),
+            not_before_ms: 1,
+            not_after_ms: 2,
+            scope: Some("test".to_string()),
+            nonce: random_nonce_16(),
+        };
+        let cert = DelegationCert::sign(&key, payload).unwrap();
+        cert.verify().unwrap();
+
+        let bytes = postcard::to_stdvec(&cert).unwrap();
+        let decoded: DelegationCert = postcard::from_bytes(&bytes).unwrap();
+        decoded.verify().unwrap();
+    }
+
+    #[test]
+    fn signature_helpers_work() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let msg = b"hello";
+        let sig = SignatureBytes::from(key.sign(msg));
+        let vk = PubkeyBytes::from(key.verifying_key());
+        let sig2 = sig.to_signature();
+        vk.to_verifying_key()
+            .unwrap()
+            .verify_strict(msg, &sig2)
+            .unwrap();
+    }
+
+    #[test]
+    fn load_delegation_cert_file_accepts_json() {
+        let key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let cert = DelegationCert::sign(
+            &key,
+            DelegationPayload {
+                validator_pubkey: PubkeyBytes::from(key.verifying_key()),
+                delegate_pubkey: PubkeyBytes([2u8; 32]),
+                not_before_ms: 1,
+                not_after_ms: 2,
+                scope: None,
+                nonce: random_nonce_16(),
+            },
+        )
+        .unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "solanacdn-delegation-cert-{}.json",
+            rand::random::<u64>()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&cert).unwrap()).unwrap();
+
+        let loaded = load_delegation_cert_file(&path).unwrap();
+        loaded.verify().unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

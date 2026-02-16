@@ -40,15 +40,26 @@ pub fn split_envelope(bytes: &[u8]) -> Result<(u16, &[u8]), FrameError> {
     Ok((version, rest))
 }
 
-pub fn decode_envelope<M: DeserializeOwned>(bytes: &[u8]) -> Result<M, FrameError> {
-    let env: Envelope<M> = postcard::from_bytes(bytes)?;
-    if env.version != PROTOCOL_VERSION {
+pub fn decode_message<M: DeserializeOwned>(bytes: &[u8]) -> Result<M, FrameError> {
+    Ok(postcard::from_bytes(bytes)?)
+}
+
+pub fn decode_envelope_with_expected_version<M: DeserializeOwned>(
+    bytes: &[u8],
+    expected_version: u16,
+) -> Result<M, FrameError> {
+    let (got, rest) = split_envelope(bytes)?;
+    if got != expected_version {
         return Err(FrameError::VersionMismatch {
-            got: env.version,
-            expected: PROTOCOL_VERSION,
+            got,
+            expected: expected_version,
         });
     }
-    Ok(env.message)
+    decode_message(rest)
+}
+
+pub fn decode_envelope<M: DeserializeOwned>(bytes: &[u8]) -> Result<M, FrameError> {
+    decode_envelope_with_expected_version(bytes, PROTOCOL_VERSION)
 }
 
 pub fn write_len_prefixed_frame(writer: &mut impl Write, payload: &[u8]) -> Result<(), FrameError> {
@@ -110,6 +121,21 @@ mod tests {
         let mut cursor = std::io::Cursor::new(buf);
         let decoded = read_len_prefixed_frame(&mut cursor).unwrap();
         assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn len_prefixed_framing_rejects_oversized_frame() {
+        let max = 16usize;
+        let too_large: u32 = (max as u32) + 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&too_large.to_be_bytes());
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = read_len_prefixed_frame_with_limit(&mut cursor, max).unwrap_err();
+        match err {
+            FrameError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+            other => panic!("expected io invalid input, got {other:?}"),
+        }
     }
 
     #[test]
