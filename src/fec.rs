@@ -1,10 +1,22 @@
 use raptorq::{Decoder, EncoderBuilder, EncodingPacket, ObjectTransmissionInformation};
 
 pub const DEFAULT_MAX_PACKET_BYTES: u16 = 1024;
-pub const DEFAULT_REPAIR_PACKETS_PER_BLOCK: u32 = 1;
+pub const DEFAULT_REPAIR_PACKETS_PER_BLOCK: u32 = 2;
 pub const DEFAULT_MAX_OBJECT_BYTES: usize = 16 * 1024 * 1024;
 
 pub type OtiBytes = [u8; 12];
+
+pub fn safe_fec_packet_bytes_public() -> u16 {
+    let budget = crate::udp::MAX_UDP_PAYLOAD_PUBLIC;
+    let overhead = crate::udp::UDP_TOKEN_LEN + 64; // conservative envelope + postcard overhead
+    let max = budget.saturating_sub(overhead);
+    max.min(u16::MAX as usize).max(256) as u16
+}
+
+pub fn clamp_fec_packet_bytes_public(n: u16) -> u16 {
+    let max = safe_fec_packet_bytes_public();
+    n.min(max).max(256)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum FecError {

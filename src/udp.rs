@@ -4,6 +4,13 @@ use serde::de::DeserializeOwned;
 use crate::frame::{FrameError, decode_envelope, encode_envelope};
 
 pub const UDP_TOKEN_LEN: usize = 16;
+pub const UDP_IPV6_MIN_MTU: usize = 1280;
+pub const UDP_IPV6_OVERHEAD: usize = 48; // IPv6(40) + UDP(8)
+pub const MAX_UDP_PAYLOAD_PUBLIC: usize = UDP_IPV6_MIN_MTU - UDP_IPV6_OVERHEAD;
+
+pub fn clamp_public_udp_payload(n: usize) -> usize {
+    n.clamp(64, MAX_UDP_PAYLOAD_PUBLIC)
+}
 
 pub fn encode_udp_datagram<M: Serialize>(
     token: [u8; UDP_TOKEN_LEN],
