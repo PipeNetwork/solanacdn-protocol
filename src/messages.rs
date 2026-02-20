@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::CryptoError;
 use crate::crypto::{DelegationCert, PubkeyBytes, SignatureBytes, random_nonce_16};
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum StreamKind {
@@ -220,6 +220,47 @@ pub struct FairBatch {
     pub attestation: FairBatchAttestation,
     /// Ordered transactions.
     pub txs: Vec<FairTx>,
+}
+
+/// POP-signed witness that a specific leader was assigned/delivered a fair batch.
+///
+/// This is intended for slashing/auditing to detect "received but never committed" behavior: if
+/// a leader's ledger does not contain a matching on-chain commit for a witnessed batch, auditors
+/// may treat it as a violation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FairBatchWitnessPayload {
+    /// POP-signed attestation committing to the batch contents and POP-local ordering metadata.
+    pub attestation: FairBatchAttestationPayload,
+    /// Validator identity pubkey that this batch was routed to (expected leader).
+    pub leader_pubkey: PubkeyBytes,
+    /// POP wall-clock timestamp when the witness was produced (ms since Unix epoch).
+    pub pop_time_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FairBatchWitness {
+    pub payload: FairBatchWitnessPayload,
+    pub signature: SignatureBytes,
+}
+
+impl FairBatchWitness {
+    pub fn sign(payload: FairBatchWitnessPayload, signing_key: &SigningKey) -> Result<Self, CryptoError> {
+        let bytes = postcard::to_stdvec(&payload)?;
+        let signature = signing_key.sign(&bytes);
+        Ok(Self {
+            payload,
+            signature: SignatureBytes::from(signature),
+        })
+    }
+
+    pub fn verify(&self, pop_pubkey: PubkeyBytes) -> Result<(), CryptoError> {
+        let bytes = postcard::to_stdvec(&self.payload)?;
+        pop_pubkey
+            .to_verifying_key()?
+            .verify_strict(&bytes, &self.signature.to_signature())
+            .map_err(|_| CryptoError::VerificationFailed)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -691,6 +732,10 @@ pub enum AgentToPop {
     SubscribeFairCommits,
     /// Stop receiving leader-signed fair ordering commits.
     UnsubscribeFairCommits,
+    /// Subscribe to POP-signed fair batch witnesses (used for slashing/auditing).
+    SubscribeFairWitnesses,
+    /// Stop receiving POP-signed fair batch witnesses.
+    UnsubscribeFairWitnesses,
     /// Request POP to close a per-origin fair TX sequence gap (send cancels and/or a handoff checkpoint).
     FairSeqResyncRequest(FairSeqResyncRequest),
     /// MCP data-availability request (checkpoint distribution).
@@ -723,6 +768,8 @@ pub enum PopToAgent {
     RelayTransaction(RelayTransaction),
     /// POP-produced fair-ordered micro-batch (leader signs a commit/receipt).
     FairBatch(FairBatch),
+    /// POP-signed witness that a specific leader was assigned/delivered a fair batch.
+    FairBatchWitness(FairBatchWitness),
     /// POP-signed cancellation certificate for a missing/invalid fair tx sequence number.
     FairSeqCancel(FairSeqCancel),
     /// Leader-signed commit/receipt for a previously received `FairBatch`.

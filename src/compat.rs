@@ -104,6 +104,9 @@ pub fn agent_to_pop_v4_from_v5(msg: messages::AgentToPop) -> Option<messages_v4:
         }
         // v5-only
         messages::AgentToPop::FairSeqResyncRequest(_v) => None,
+        messages::AgentToPop::SubscribeFairWitnesses | messages::AgentToPop::UnsubscribeFairWitnesses => {
+            None
+        }
         // POP-only extensions (not supported in v4)
         messages::AgentToPop::McpDaRequest(_)
         | messages::AgentToPop::McpDaAttest(_)
@@ -198,6 +201,7 @@ pub fn pop_to_agent_v4_from_v5(msg: messages::PopToAgent) -> Option<messages_v4:
             relay_transaction_v4_from_v5(v),
         )),
         messages::PopToAgent::FairBatch(v) => fair_batch_v4_from_v5(v).map(messages_v4::PopToAgent::FairBatch),
+        messages::PopToAgent::FairBatchWitness(_v) => None,
         messages::PopToAgent::FairSeqCancel(v) => fair_seq_cancel_v4_from_v5(v).map(messages_v4::PopToAgent::FairSeqCancel),
         messages::PopToAgent::FairBatchCommit(v) => Some(messages_v4::PopToAgent::FairBatchCommit(
             fair_batch_commit_v4_from_v5(v),
@@ -775,4 +779,3 @@ mod tests {
         }
     }
 }
-
