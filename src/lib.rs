@@ -3,6 +3,8 @@ pub mod compat;
 pub mod crypto;
 pub mod fec;
 pub mod frame;
+#[cfg(feature = "ledger-memos")]
+pub mod ledger_memos;
 pub mod messages;
 pub mod messages_v4;
 pub mod udp;

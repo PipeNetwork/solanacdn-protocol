@@ -9,6 +9,7 @@ This crate intentionally contains only:
 - UDP token framing helpers (`udp`)
 - RaptorQ FEC helpers (`fec`)
 - Small crypto helpers for delegation/auth payloads (`crypto`)
+- Optional ledger memo helpers (`ledger_memos`, behind the `ledger-memos` feature)
 
 It does **not** include any networking clients/servers, POP discovery, TLS configuration, or API key
 logic. Those live in the validator integration (Agave fork) and in SolanaCDN private services.
