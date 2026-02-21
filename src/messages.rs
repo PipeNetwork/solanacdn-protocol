@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::CryptoError;
 use crate::crypto::{DelegationCert, PubkeyBytes, SignatureBytes, random_nonce_16};
 
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum StreamKind {
@@ -476,6 +476,77 @@ impl FairBatchReceiptCommit {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FairBatchRejectReason {
+    Unknown,
+    TooManyTxs,
+    TotalBytesExceeded,
+    InvalidAttestation,
+    AttestationMismatch,
+    TxSigMismatch,
+    DuplicateSig,
+    AlreadySeen,
+    InvalidWireTx,
+    MerkleRootMismatch,
+    InternalError,
+}
+
+/// Leader-signed rejection of an entire `FairBatch`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FairBatchRejectPayload {
+    /// POP that produced the original `FairBatch`.
+    pub origin_pop_id: String,
+    /// Flow identifier within the origin POP (e.g. per-user/per-session).
+    ///
+    /// When unset, defaults to 0 (single-flow).
+    #[serde(default)]
+    pub flow_id: u128,
+    /// Batch ID being rejected.
+    pub batch_id: u128,
+    /// Ordering index of the first tx in the batch (inclusive).
+    ///
+    /// When `AgentCapabilities.tx_fair_fifo_per_origin_flow` is true, this is the POP-provided
+    /// per-origin+flow sequence number (`FairBatch.tx_seq_start`).
+    pub order_start: u64,
+    /// Optional target slot hint (best-effort).
+    #[serde(default)]
+    pub target_slot: Option<u64>,
+    /// Rejection reason (best-effort, for client UX/telemetry).
+    pub reason: FairBatchRejectReason,
+    /// Validator identity pubkey that signed this rejection.
+    pub leader_pubkey: PubkeyBytes,
+    /// Leader wall-clock timestamp when the rejection was produced (ms since Unix epoch).
+    pub leader_time_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FairBatchReject {
+    pub payload: FairBatchRejectPayload,
+    pub signature: SignatureBytes,
+}
+
+impl FairBatchReject {
+    pub fn sign(payload: FairBatchRejectPayload, signing_key: &SigningKey) -> Result<Self, CryptoError> {
+        let bytes = postcard::to_stdvec(&payload)?;
+        let signature = signing_key.sign(&bytes);
+        Ok(Self {
+            payload,
+            signature: SignatureBytes::from(signature),
+        })
+    }
+
+    pub fn verify(&self) -> Result<(), CryptoError> {
+        let bytes = postcard::to_stdvec(&self.payload)?;
+        self.payload
+            .leader_pubkey
+            .to_verifying_key()?
+            .verify_strict(&bytes, &self.signature.to_signature())
+            .map_err(|_| CryptoError::VerificationFailed)?;
+        Ok(())
+    }
+}
+
 /// Merkle proof of inclusion for a tx signature within a `FairBatchReceiptCommit`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FairMerkleProof {
@@ -728,6 +799,8 @@ pub enum AgentToPop {
     FairBatchCommit(FairBatchCommit),
     /// Leader-signed ACK (compact receipt commit) for a previously received `FairBatch`.
     FairBatchAck(FairBatchReceiptCommit),
+    /// Leader-signed rejection of an entire `FairBatch`.
+    FairBatchReject(FairBatchReject),
     /// Per-session capabilities advertised by the agent/validator.
     Capabilities(AgentCapabilities),
     /// Subscribe to leader-signed fair ordering commits (used for slashing/auditing).
@@ -738,6 +811,10 @@ pub enum AgentToPop {
     SubscribeFairAcks,
     /// Stop receiving leader-signed fair ordering ACKs.
     UnsubscribeFairAcks,
+    /// Subscribe to leader-signed fair batch rejections (used for client UX/auditing).
+    SubscribeFairRejects,
+    /// Stop receiving leader-signed fair batch rejections.
+    UnsubscribeFairRejects,
     /// Subscribe to POP-signed fair batch witnesses (used for slashing/auditing).
     SubscribeFairWitnesses,
     /// Stop receiving POP-signed fair batch witnesses.
@@ -782,6 +859,8 @@ pub enum PopToAgent {
     FairBatchCommit(FairBatchCommit),
     /// Leader-signed ACK (compact receipt commit) for a previously received `FairBatch`.
     FairBatchAck(FairBatchReceiptCommit),
+    /// Leader-signed rejection of an entire `FairBatch`.
+    FairBatchReject(FairBatchReject),
     /// POP-signed checkpoint for leader handoff/resync of per-origin fair TX sequencing.
     FairSeqHandoff(FairSeqHandoff),
     /// MCP data-availability request (checkpoint distribution).
@@ -926,6 +1005,21 @@ pub enum PopToPop {
     FairBatchAckGossip {
         origin_pop_id: String,
         ack: FairBatchReceiptCommit,
+    },
+    /// Forward a leader-signed rejection of an entire `FairBatch` across the POP mesh.
+    ///
+    /// Used to return "reject" signals to the POP that accepted a retail transaction when
+    /// home-POP routing is enabled.
+    FairBatchRejectForward {
+        target_pop_id: String,
+        reject: FairBatchReject,
+    },
+    /// Gossip a leader-signed rejection of an entire `FairBatch` across the POP mesh.
+    ///
+    /// Used to propagate rejects network-wide for auditing/telemetry.
+    FairBatchRejectGossip {
+        origin_pop_id: String,
+        reject: FairBatchReject,
     },
     /// Forward a raw Solana transaction packet across the POP mesh (v2 with policy flags).
     ///
@@ -1589,5 +1683,27 @@ mod tests {
         assert!(tampered
             .verify(PubkeyBytes::from(pop_key.verifying_key()))
             .is_err());
+    }
+
+    #[test]
+    fn fair_batch_reject_sign_verify_roundtrip() {
+        let leader_key = SigningKey::generate(&mut rand::rngs::OsRng);
+
+        let payload = FairBatchRejectPayload {
+            origin_pop_id: "pop-1".to_string(),
+            flow_id: 42,
+            batch_id: 7,
+            order_start: 100,
+            target_slot: Some(123),
+            reason: FairBatchRejectReason::InvalidWireTx,
+            leader_pubkey: PubkeyBytes::from(leader_key.verifying_key()),
+            leader_time_ms: 456,
+        };
+        let reject = FairBatchReject::sign(payload, &leader_key).unwrap();
+        reject.verify().unwrap();
+
+        let mut tampered = reject.clone();
+        tampered.payload.batch_id = 8;
+        assert!(tampered.verify().is_err());
     }
 }

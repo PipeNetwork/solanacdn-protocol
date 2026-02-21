@@ -102,10 +102,14 @@ pub fn agent_to_pop_v4_from_v5(msg: messages::AgentToPop) -> Option<messages_v4:
         messages::AgentToPop::UnsubscribeFairCommits => {
             Some(messages_v4::AgentToPop::UnsubscribeFairCommits)
         }
-        // v7-only
+        // v7+ only
         messages::AgentToPop::FairBatchAck(_)
         | messages::AgentToPop::SubscribeFairAcks
-        | messages::AgentToPop::UnsubscribeFairAcks => None,
+        | messages::AgentToPop::UnsubscribeFairAcks
+        // v8-only
+        | messages::AgentToPop::FairBatchReject(_)
+        | messages::AgentToPop::SubscribeFairRejects
+        | messages::AgentToPop::UnsubscribeFairRejects => None,
         // v5-only
         messages::AgentToPop::FairSeqResyncRequest(_v) => None,
         messages::AgentToPop::SubscribeFairWitnesses | messages::AgentToPop::UnsubscribeFairWitnesses => {
@@ -210,7 +214,10 @@ pub fn pop_to_agent_v4_from_v5(msg: messages::PopToAgent) -> Option<messages_v4:
         messages::PopToAgent::FairBatchCommit(v) => Some(messages_v4::PopToAgent::FairBatchCommit(
             fair_batch_commit_v4_from_v5(v),
         )),
-        messages::PopToAgent::FairBatchAck(_) => None,
+        // v7+ only
+        messages::PopToAgent::FairBatchAck(_)
+        // v8-only
+        | messages::PopToAgent::FairBatchReject(_) => None,
         // v5-only
         messages::PopToAgent::FairSeqHandoff(_v) => None,
         // POP-only extensions (not supported in v4)
