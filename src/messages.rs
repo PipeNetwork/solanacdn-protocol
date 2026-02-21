@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::CryptoError;
 use crate::crypto::{DelegationCert, PubkeyBytes, SignatureBytes, random_nonce_16};
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum StreamKind {
@@ -726,12 +726,18 @@ pub enum AgentToPop {
     AuthRefresh(AuthRefresh),
     /// Leader-signed commit/receipt for a previously received `FairBatch`.
     FairBatchCommit(FairBatchCommit),
+    /// Leader-signed ACK (compact receipt commit) for a previously received `FairBatch`.
+    FairBatchAck(FairBatchReceiptCommit),
     /// Per-session capabilities advertised by the agent/validator.
     Capabilities(AgentCapabilities),
     /// Subscribe to leader-signed fair ordering commits (used for slashing/auditing).
     SubscribeFairCommits,
     /// Stop receiving leader-signed fair ordering commits.
     UnsubscribeFairCommits,
+    /// Subscribe to leader-signed fair ordering ACKs (used for slashing/auditing).
+    SubscribeFairAcks,
+    /// Stop receiving leader-signed fair ordering ACKs.
+    UnsubscribeFairAcks,
     /// Subscribe to POP-signed fair batch witnesses (used for slashing/auditing).
     SubscribeFairWitnesses,
     /// Stop receiving POP-signed fair batch witnesses.
@@ -774,6 +780,8 @@ pub enum PopToAgent {
     FairSeqCancel(FairSeqCancel),
     /// Leader-signed commit/receipt for a previously received `FairBatch`.
     FairBatchCommit(FairBatchCommit),
+    /// Leader-signed ACK (compact receipt commit) for a previously received `FairBatch`.
+    FairBatchAck(FairBatchReceiptCommit),
     /// POP-signed checkpoint for leader handoff/resync of per-origin fair TX sequencing.
     FairSeqHandoff(FairSeqHandoff),
     /// MCP data-availability request (checkpoint distribution).
@@ -911,6 +919,13 @@ pub enum PopToPop {
     FairBatchCommitGossip {
         origin_pop_id: String,
         commit: FairBatchCommit,
+    },
+    /// Gossip a leader-signed ACK/receipt commit for a `FairBatch` across the POP mesh.
+    ///
+    /// Used to propagate compact ordering ACKs network-wide for slashing/auditing.
+    FairBatchAckGossip {
+        origin_pop_id: String,
+        ack: FairBatchReceiptCommit,
     },
     /// Forward a raw Solana transaction packet across the POP mesh (v2 with policy flags).
     ///
